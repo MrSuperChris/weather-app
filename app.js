@@ -46,6 +46,13 @@ function setLocation(loc, { save = true } = {}) {
   if (save) localStorage.setItem("wx-location", JSON.stringify(loc));
   document.title = loc.name ? `${loc.name} — Weather` : "Weather";
   $("searchBox").classList.add("hidden");
+  // Render the conditions card immediately with placeholders so the layout
+  // doesn't jump when the data arrives a moment later.
+  if ($("current").classList.contains("hidden")) {
+    for (const id of ["temp", "feels", "humidity", "wind", "hilo", "precip", "updated"]) $(id).textContent = "–";
+    $("wxDesc").textContent = "Loading…";
+    $("current").classList.remove("hidden");
+  }
   loadWeather();
   loadReport();
   loadAlerts();

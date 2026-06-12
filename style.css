@@ -48,6 +48,12 @@ main {
   overflow-y: auto;
 }
 
+/* Now tab: fits without scrolling when possible — the radar absorbs spare
+   height and shrinks first. Only if the viewport is shorter than the cards'
+   minimums does the tab scroll, so nothing is ever unreachable. */
+#viewNow { overflow-y: auto; }
+#viewNow > .card { flex-shrink: 0; }
+
 .hour-row {
   display: grid;
   grid-template-columns: 64px 40px 1fr 70px;
@@ -185,7 +191,7 @@ main {
   padding: 0;
   overflow: hidden;
   flex: 1;
-  min-height: 0;
+  min-height: 264px; /* map floor + controls; below this the tab scrolls */
   display: flex;
   flex-direction: column;
 }
@@ -279,4 +285,14 @@ main {
 
 @media (min-width: 700px) {
   .detail-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+/* Short screens (browser chrome, large fonts): tighten the conditions card
+   so the radar keeps as much room as possible. */
+@media (max-height: 700px) {
+  .wx-icon { font-size: 2.4rem; }
+  .temp { font-size: 2.7rem; }
+  .wx-desc { margin: 0 0 8px; }
+  .card { padding: 10px; margin-bottom: 8px; }
+  .detail-grid { gap: 6px; }
 }
