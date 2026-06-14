@@ -153,15 +153,16 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 18px;
+  padding-top: 6px;
 }
-.wx-icon { font-size: 3.2rem; line-height: 1; }
-.temp { font-size: 3.6rem; font-weight: 200; letter-spacing: -2px; }
+.wx-icon { font-size: 4.6rem; line-height: 1; }
+.temp { font-size: 5.2rem; font-weight: 200; letter-spacing: -3px; }
 .wx-desc {
   text-align: center;
   color: var(--muted);
-  margin: 2px 0 14px;
-  font-size: 1.05rem;
+  margin: 6px 0 20px;
+  font-size: 1.25rem;
 }
 
 .detail-grid {
@@ -224,13 +225,65 @@ main {
   font-weight: 600;
 }
 
-.period {
+/* 7-Day tab: one-row-per-day summary strip */
+.day-row {
+  display: grid;
+  grid-template-columns: 50px 30px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
   padding: 9px 0;
   border-top: 1px solid var(--card-edge);
 }
-.period:first-child { border-top: none; padding-top: 0; }
-.p-name { font-weight: 600; margin-bottom: 2px; }
-.p-text { color: var(--muted); font-size: 0.93rem; line-height: 1.45; }
+.day-row:first-child { border-top: none; }
+.d-name { font-weight: 600; }
+.d-icon { font-size: 1.3rem; text-align: center; }
+.d-desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.d-pop { color: var(--accent); font-size: 0.82rem; }
+.d-temp {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 62px;
+  color: var(--muted);
+}
+.d-temp b { color: var(--text); font-weight: 700; }
+
+/* 7-Day tab: detailed cards for the current + next 2 periods */
+.period-card {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 12px;
+  border-left: 3px solid var(--accent);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.period-card:last-child { margin-bottom: 0; }
+.period-card.night { border-left-color: #6a7ba6; }
+.pc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.pc-name { font-weight: 700; font-size: 1.05rem; }
+.pc-temp { font-size: 1.6rem; font-weight: 300; font-variant-numeric: tabular-nums; }
+.pc-short { margin-top: 2px; font-size: 0.95rem; }
+.pc-meta {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.pc-text {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
 
 #alertBanner { margin-bottom: 10px; }
 .alert {
@@ -290,9 +343,9 @@ main {
 /* Short screens (browser chrome, large fonts): tighten the conditions card
    so the radar keeps as much room as possible. */
 @media (max-height: 700px) {
-  .wx-icon { font-size: 2.4rem; }
-  .temp { font-size: 2.7rem; }
-  .wx-desc { margin: 0 0 8px; }
+  .wx-icon { font-size: 3.4rem; }
+  .temp { font-size: 3.9rem; }
+  .wx-desc { margin: 2px 0 10px; font-size: 1.1rem; }
   .card { padding: 10px; margin-bottom: 8px; }
   .detail-grid { gap: 6px; }
 }

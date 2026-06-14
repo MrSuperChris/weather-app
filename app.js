@@ -49,7 +49,7 @@ function setLocation(loc, { save = true } = {}) {
   // Render the conditions card immediately with placeholders so the layout
   // doesn't jump when the data arrives a moment later.
   if ($("current").classList.contains("hidden")) {
-    for (const id of ["temp", "feels", "humidity", "wind", "hilo", "precip", "updated"]) $(id).textContent = "–";
+    for (const id of ["temp", "humidity", "wind", "hilo"]) $(id).textContent = "–";
     $("wxDesc").textContent = "Loading…";
     $("current").classList.remove("hidden");
   }
@@ -122,8 +122,8 @@ async function loadWeather() {
   const url = "https://api.open-meteo.com/v1/forecast" +
     `?latitude=${lat}&longitude=${lon}` +
     "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,weather_code,is_day" +
-    "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum" +
-    "&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_days=2" +
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+    "&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_days=7" +
     "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto";
   try {
     const r = await fetch(url);
@@ -138,10 +138,9 @@ async function loadWeather() {
     $("humidity").textContent = `${c.relative_humidity_2m}%`;
     $("wind").textContent = `${Math.round(c.wind_speed_10m)} mph ${COMPASS[Math.round(c.wind_direction_10m / 22.5) % 16]}`;
     $("hilo").textContent = `${Math.round(d.temperature_2m_max[0])}° / ${Math.round(d.temperature_2m_min[0])}°`;
-    $("precip").textContent = `${d.precipitation_sum[0] ?? 0}"`;
-    $("updated").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     $("current").classList.remove("hidden");
     renderHourly(j);
+    renderDaily(j);
     hideStatus();
   } catch (e) {
     showStatus("Couldn't load weather data. Tap ↻ to retry.");
@@ -193,9 +192,51 @@ function renderHourly(j) {
   }
 }
 
+/* ---------- 7-day summary (one row per day, from the Open-Meteo response) ---------- */
+
+function dayLabel(isoDate, i) {
+  if (i === 0) return "Today";
+  // Parse as local date (no timezone shift) and name the weekday.
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString([], { weekday: "short" });
+}
+
+function renderDaily(j) {
+  const d = j.daily;
+  const list = $("dailyList");
+  list.innerHTML = "";
+  for (let i = 0; i < d.time.length; i++) {
+    const [desc, dayIcon] = WMO[d.weather_code[i]] || ["—", "❔"];
+    const pop = d.precipitation_probability_max[i] ?? 0;
+    const row = document.createElement("div");
+    row.className = "day-row";
+    row.innerHTML =
+      `<span class="d-name">${dayLabel(d.time[i], i)}</span>` +
+      `<span class="d-icon">${dayIcon}</span>` +
+      `<span class="d-desc">${desc}</span>` +
+      `<span class="d-pop">${pop > 0 ? "💧 " + pop + "%" : ""}</span>` +
+      `<span class="d-temp"><b>${Math.round(d.temperature_2m_max[i])}°</b> ${Math.round(d.temperature_2m_min[i])}°</span>`;
+    list.appendChild(row);
+  }
+  $("dailyCard").classList.remove("hidden");
+}
+
 /* ---------- NWS report & alerts (US only; sections hide elsewhere) ---------- */
 
 const nwsForecastUrls = {}; // "lat,lon" -> gridpoint forecast URL
+
+// NWS periods carry only a text shortForecast, so map keywords to an emoji.
+function nwsEmoji(text, isDay) {
+  const t = (text || "").toLowerCase();
+  if (t.includes("thunder")) return "⛈️";
+  if (t.includes("snow") || t.includes("flurr")) return "🌨️";
+  if (t.includes("rain") || t.includes("shower") || t.includes("drizzle")) return "🌧️";
+  if (t.includes("fog") || t.includes("haze")) return "🌫️";
+  if (t.includes("overcast") || t.includes("mostly cloudy")) return "☁️";
+  if (t.includes("partly") || t.includes("cloud")) return isDay ? "⛅" : "☁️";
+  if (t.includes("clear") || t.includes("sunny") || t.includes("fair")) return isDay ? "☀️" : "🌙";
+  return isDay ? "☀️" : "🌙";
+}
 
 async function loadReport() {
   const { lat, lon } = state.loc;
@@ -208,20 +249,22 @@ async function loadReport() {
     }
     const r = await fetch(nwsForecastUrls[key]);
     if (!r.ok) throw new Error(r.status);
-    const periods = (await r.json()).properties.periods;
+    const periods = (await r.json()).properties.periods.slice(0, 3);
     const list = $("forecastList");
     list.innerHTML = "";
     for (const p of periods) {
-      const div = document.createElement("div");
-      div.className = "period";
-      const name = document.createElement("div");
-      name.className = "p-name";
-      name.textContent = p.name;
-      const text = document.createElement("div");
-      text.className = "p-text";
-      text.textContent = p.detailedForecast;
-      div.append(name, text);
-      list.appendChild(div);
+      const pop = p.probabilityOfPrecipitation?.value || 0;
+      const card = document.createElement("div");
+      card.className = "period-card" + (p.isDaytime ? " day" : " night");
+      card.innerHTML =
+        `<div class="pc-head">` +
+          `<span class="pc-name">${p.name}</span>` +
+          `<span class="pc-temp">${p.temperature}°</span>` +
+        `</div>` +
+        `<div class="pc-short">${nwsEmoji(p.shortForecast, p.isDaytime)} ${p.shortForecast}</div>` +
+        `<div class="pc-meta">${pop > 0 ? `<span>💧 ${pop}%</span>` : ""}<span>🍃 ${p.windDirection} ${p.windSpeed}</span></div>` +
+        `<div class="pc-text">${p.detailedForecast}</div>`;
+      list.appendChild(card);
     }
     $("forecastCard").classList.toggle("hidden", periods.length === 0);
     $("forecastEmpty").classList.toggle("hidden", periods.length > 0);

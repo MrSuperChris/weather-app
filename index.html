@@ -31,12 +31,9 @@
       </div>
       <div id="wxDesc" class="wx-desc"></div>
       <div class="detail-grid">
-        <div><span class="label">Feels like</span><span id="feels"></span></div>
         <div><span class="label">Humidity</span><span id="humidity"></span></div>
         <div><span class="label">Wind</span><span id="wind"></span></div>
         <div><span class="label">Hi / Lo</span><span id="hilo"></span></div>
-        <div><span class="label">Rain today</span><span id="precip"></span></div>
-        <div><span class="label">Updated</span><span id="updated"></span></div>
       </div>
     </section>
 
@@ -58,8 +55,12 @@
     </div>
 
     <div id="viewForecast" class="view hidden">
+      <section id="dailyCard" class="card hidden">
+        <h2 class="card-title">This week</h2>
+        <div id="dailyList"></div>
+      </section>
       <section id="forecastCard" class="card hidden">
-        <h2 class="card-title">Forecast</h2>
+        <h2 class="card-title">Next 3 periods</h2>
         <div id="forecastList"></div>
       </section>
       <p id="forecastEmpty" class="status hidden">No NWS text forecast for this location (US only).</p>
