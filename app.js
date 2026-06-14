@@ -126,15 +126,25 @@ async function loadWeather() {
     "&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_days=7" +
     "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto";
   try {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(r.status);
+    // Phones often fail the first request on a cold radio; retry briefly
+    // before surfacing an error so a transient blip self-heals.
+    let r, lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        r = await fetch(url);
+        if (r.ok) break;
+        lastErr = new Error(r.status);
+      } catch (e) { lastErr = e; }
+      r = null;
+      await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
+    }
+    if (!r) throw lastErr || new Error("fetch failed");
     const j = await r.json();
     const c = j.current, d = j.daily;
     const [desc, dayIcon, nightIcon] = WMO[c.weather_code] || ["—", "❔"];
     $("wxIcon").textContent = (!c.is_day && nightIcon) ? nightIcon : dayIcon;
     $("temp").textContent = `${Math.round(c.temperature_2m)}°`;
     $("wxDesc").textContent = desc;
-    $("feels").textContent = `${Math.round(c.apparent_temperature)}°`;
     $("humidity").textContent = `${c.relative_humidity_2m}%`;
     $("wind").textContent = `${Math.round(c.wind_speed_10m)} mph ${COMPASS[Math.round(c.wind_direction_10m / 22.5) % 16]}`;
     $("hilo").textContent = `${Math.round(d.temperature_2m_max[0])}° / ${Math.round(d.temperature_2m_min[0])}°`;
@@ -431,6 +441,13 @@ $("playBtn").onclick = togglePlay;
 $("frameSlider").oninput = (e) => { state.playing = false; stopLoop(); $("playBtn").innerHTML = "&#9654;"; showFrame(+e.target.value); };
 
 setInterval(refreshAll, 10 * 60 * 1000);
+
+// Self-heal: reload data when the connection returns, and when the app is
+// brought back to the foreground (the common "I just opened it" case).
+window.addEventListener("online", refreshAll);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshAll();
+});
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
