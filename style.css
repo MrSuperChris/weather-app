@@ -54,27 +54,7 @@ main {
 #viewNow { overflow-y: auto; }
 #viewNow > .card { flex-shrink: 0; }
 
-.hour-row {
-  display: grid;
-  grid-template-columns: 64px 40px 1fr 70px;
-  align-items: center;
-  padding: 6px 0;
-  border-top: 1px solid var(--card-edge);
-  font-variant-numeric: tabular-nums;
-}
-.hour-row:first-child { border-top: none; }
-.hour-row span:nth-child(1) { color: var(--muted); }
-.hour-row span:nth-child(3) { font-weight: 600; }
-.hour-row span:nth-child(4) { text-align: right; color: var(--muted); font-size: 0.9rem; }
-.hour-divider {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  font-weight: 700;
-  padding: 10px 0 4px;
-  border-top: 1px solid var(--card-edge);
-}
+#hourlyList svg { display: block; width: 100%; max-width: 460px; margin: 0 auto; }
 
 .icon-btn {
   background: var(--card);

@@ -157,49 +157,80 @@ async function loadWeather() {
   }
 }
 
-/* ---------- hourly (next 24h, from the same Open-Meteo response) ---------- */
+/* ---------- hourly (next 24h, vertical chart from the Open-Meteo response) ---------- */
 
-function hourLabel(isoLocal) {
-  const h = +isoLocal.slice(11, 13);
-  if (h === 0) return "12 AM";
-  if (h === 12) return "12 PM";
-  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+// Temperature → color, a cool-to-hot ramp that reads year-round, any climate.
+function tempColor(t) {
+  return t >= 95 ? "#ef5a2a" : t >= 86 ? "#f2843a" : t >= 78 ? "#f0b22e"
+    : t >= 68 ? "#7cc36a" : t >= 55 ? "#46c39a" : t >= 40 ? "#4aa3ff" : "#6f8fe0";
+}
+
+// Rain chance → how many of the 4 pips light up.
+function pipCount(p) {
+  return p >= 70 ? 4 : p >= 45 ? 3 : p >= 25 ? 2 : p >= 10 ? 1 : 0;
+}
+
+function hourLabel(iso) {
+  let h = +iso.slice(11, 13);
+  const ap = h < 12 ? "a" : "p";
+  h = h % 12 || 12;
+  return h + ap;
 }
 
 function renderHourly(j) {
   const h = j.hourly;
-  const list = $("hourlyList");
-  list.innerHTML = "";
-  // Times are location-local ISO strings, so string comparison finds "now".
   const nowKey = j.current.time.slice(0, 13) + ":00";
   let start = h.time.findIndex((t) => t >= nowKey);
   if (start < 0) start = 0;
-  let prevDate = h.time[start].slice(0, 10);
+  const rows = [];
   for (let i = start; i < Math.min(start + 24, h.time.length); i++) {
-    const date = h.time[i].slice(0, 10);
-    if (date !== prevDate) {
-      const div = document.createElement("div");
-      div.className = "hour-divider";
-      div.textContent = "Tomorrow";
-      list.appendChild(div);
-      prevDate = date;
-    }
-    const [, dayIcon, nightIcon] = WMO[h.weather_code[i]] || ["", "❔"];
-    const row = document.createElement("div");
-    row.className = "hour-row";
-    const cells = [
-      hourLabel(h.time[i]),
-      (!h.is_day[i] && nightIcon) ? nightIcon : dayIcon,
-      `${Math.round(h.temperature_2m[i])}°`,
-      `💧 ${h.precipitation_probability[i] ?? 0}%`,
-    ];
-    for (const c of cells) {
-      const span = document.createElement("span");
-      span.textContent = c;
-      row.appendChild(span);
-    }
-    list.appendChild(row);
+    rows.push({ time: h.time[i], temp: Math.round(h.temperature_2m[i]), pop: h.precipitation_probability[i] ?? 0 });
   }
+  if (!rows.length) return;
+
+  const W = 340, top = 34, rowH = 30, divH = 28;
+  const temps = rows.map((r) => r.temp);
+  let tMin = Math.min(...temps), tMax = Math.max(...temps);
+  if (tMax - tMin < 8) { const m = (tMin + tMax) / 2; tMin = m - 4; tMax = m + 4; } else { tMin -= 2; tMax += 2; }
+  const xc = (t) => 64 + ((t - tMin) / (tMax - tMin)) * 84;
+
+  // Lay out rows, inserting a gap where the date rolls over to tomorrow.
+  const startDate = rows[0].time.slice(0, 10);
+  const divIdx = rows.findIndex((r) => r.time.slice(0, 10) !== startDate);
+  const ys = [];
+  let y = top, dividerY = null;
+  rows.forEach((r, i) => { if (i === divIdx) { dividerY = y + 9; y += divH; } ys[i] = y; y += rowH; });
+  const Htot = y + 12;
+
+  const muted = "#93a4bf", ink = "#e8eef7", blue = "#4aa3ff", track = "#1c2945";
+  const seg = (a, b) => rows.slice(a, b).map((r, k) => `${xc(r.temp)},${ys[a + k]}`).join(" ");
+
+  let s = `<svg viewBox="0 0 ${W} ${Htot}" width="100%" role="img" aria-label="Hourly forecast: temperature line and rain-chance meter for the next 24 hours">`;
+  s += `<text x="106" y="20" font-size="12" fill="${muted}" text-anchor="middle" letter-spacing="1">TEMP</text>`;
+  s += `<text x="270" y="20" font-size="12" fill="${muted}" text-anchor="middle" letter-spacing="1">RAIN</text>`;
+  // Temperature line, split at the day boundary so it doesn't jump the gap.
+  if (divIdx > 0) {
+    s += `<polyline points="${seg(0, divIdx)}" fill="none" stroke="#3b4a6a" stroke-width="2"/>`;
+    s += `<polyline points="${seg(divIdx, rows.length)}" fill="none" stroke="#3b4a6a" stroke-width="2"/>`;
+  } else {
+    s += `<polyline points="${seg(0, rows.length)}" fill="none" stroke="#3b4a6a" stroke-width="2"/>`;
+  }
+  if (dividerY !== null) {
+    s += `<line x1="20" y1="${dividerY}" x2="${W - 16}" y2="${dividerY}" stroke="#22335a" stroke-width="1"/>`;
+    s += `<text x="20" y="${dividerY - 6}" font-size="11" fill="${muted}" letter-spacing="1">TOMORROW</text>`;
+  }
+  rows.forEach((r, i) => {
+    const yy = ys[i];
+    s += `<text x="34" y="${yy + 4}" font-size="12" fill="${muted}" text-anchor="end">${hourLabel(r.time)}</text>`;
+    s += `<circle cx="${xc(r.temp)}" cy="${yy}" r="5" fill="${tempColor(r.temp)}"/>`;
+    s += `<text x="158" y="${yy + 4}" font-size="13" fill="${ink}">${r.temp}°</text>`;
+    const f = pipCount(r.pop);
+    for (let k = 0; k < 4; k++) {
+      s += `<rect x="${246 + k * 12}" y="${yy - 5}" width="8" height="10" rx="2" fill="${k < f ? blue : track}"/>`;
+    }
+  });
+  s += `</svg>`;
+  $("hourlyList").innerHTML = s;
 }
 
 /* ---------- 7-day summary (one row per day, from the Open-Meteo response) ---------- */
