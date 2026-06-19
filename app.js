@@ -315,6 +315,26 @@ async function loadReport() {
   }
 }
 
+const SEVERITY = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
+
+// Collapse a list of alerts into one headline. Distinct events join with " / "
+// (e.g. "Flood Watch / Heat Advisory"); repeats of one type fold into "(N)";
+// too many to read falls back to a plain count.
+function alertTitle(feats) {
+  const groups = [];
+  for (const f of feats) {
+    const ev = f.properties.event;
+    let g = groups.find((x) => x.name === ev);
+    if (!g) { g = { name: ev, count: 0, sev: 0 }; groups.push(g); }
+    g.count++;
+    g.sev = Math.max(g.sev, SEVERITY[f.properties.severity] ?? 0);
+  }
+  groups.sort((a, b) => b.sev - a.sev);
+  const labels = groups.map((g) => (g.count > 1 ? `${g.name} (${g.count})` : g.name));
+  const title = labels.join(" / ");
+  return (labels.length > 3 || title.length > 44) ? `${feats.length} weather alerts` : title;
+}
+
 async function loadAlerts() {
   const { lat, lon } = state.loc;
   const banner = $("alertBanner");
@@ -323,24 +343,49 @@ async function loadAlerts() {
     if (!r.ok) throw new Error(r.status);
     const feats = (await r.json()).features || [];
     banner.innerHTML = "";
+    if (!feats.length) { banner.classList.add("hidden"); return; }
+
+    // Worst alert sets the banner color; sort details worst-first too.
+    feats.sort((a, b) => (SEVERITY[b.properties.severity] ?? 0) - (SEVERITY[a.properties.severity] ?? 0));
+    const worst = SEVERITY[feats[0].properties.severity] ?? 0;
+
+    const wrap = document.createElement("div");
+    wrap.className = "alert " + (worst >= 3 ? "alert-severe" : "alert-moderate");
+
+    const bar = document.createElement("button");
+    bar.className = "alert-bar";
+    bar.setAttribute("aria-expanded", "false");
+    bar.innerHTML = `<span class="ab-icon">⚠</span><span class="ab-title"></span><span class="ab-chev">▾</span>`;
+    bar.querySelector(".ab-title").textContent = alertTitle(feats);
+
+    const details = document.createElement("div");
+    details.className = "alert-details hidden";
     for (const f of feats) {
       const p = f.properties;
-      const div = document.createElement("div");
-      div.className = "alert " + (["Extreme", "Severe"].includes(p.severity) ? "alert-severe" : "alert-moderate");
-      const head = document.createElement("div");
-      head.className = "alert-head";
-      head.textContent = `⚠ ${p.event}`;
-      const summary = document.createElement("div");
-      summary.className = "alert-summary";
-      summary.textContent = p.headline || "";
-      const body = document.createElement("div");
-      body.className = "alert-body hidden";
-      body.textContent = p.description || "";
-      div.append(head, summary, body);
-      div.onclick = () => body.classList.toggle("hidden");
-      banner.appendChild(div);
+      const item = document.createElement("div");
+      item.className = "alert-item";
+      const ev = document.createElement("div");
+      ev.className = "ai-event";
+      ev.textContent = `⚠ ${p.event}`;
+      const hl = document.createElement("div");
+      hl.className = "ai-headline";
+      hl.textContent = p.headline || "";
+      const desc = document.createElement("div");
+      desc.className = "ai-desc";
+      desc.textContent = p.description || "";
+      item.append(ev, hl, desc);
+      details.appendChild(item);
     }
-    banner.classList.toggle("hidden", feats.length === 0);
+
+    bar.onclick = () => {
+      const open = wrap.classList.toggle("open");
+      details.classList.toggle("hidden", !open);
+      bar.setAttribute("aria-expanded", String(open));
+    };
+
+    wrap.append(bar, details);
+    banner.appendChild(wrap);
+    banner.classList.remove("hidden");
   } catch {
     banner.classList.add("hidden");
   }
