@@ -126,16 +126,17 @@ async function loadWeather() {
     "&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_days=7" +
     "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto";
   try {
-    // Phones often fail the first request on a cold radio; retry briefly
-    // before surfacing an error so a transient blip self-heals.
-    let r, lastErr;
+    // Phones often fail the first request on a cold radio; retry briefly on
+    // network errors / 5xx so a transient blip self-heals. But never retry a
+    // 4xx (e.g. 429 rate limit) — retrying only burns more of the daily quota.
+    let r = null, lastErr;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        r = await fetch(url);
-        if (r.ok) break;
-        lastErr = new Error(r.status);
+        const resp = await fetch(url);
+        if (resp.ok) { r = resp; break; }
+        lastErr = new Error("HTTP " + resp.status);
+        if (resp.status >= 400 && resp.status < 500) break;
       } catch (e) { lastErr = e; }
-      r = null;
       await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
     }
     if (!r) throw lastErr || new Error("fetch failed");
@@ -151,9 +152,12 @@ async function loadWeather() {
     $("current").classList.remove("hidden");
     renderHourly(j);
     renderDaily(j);
+    lastWeatherLoad = Date.now();
     hideStatus();
   } catch (e) {
-    showStatus("Couldn't load weather data. Tap ↻ to retry.");
+    showStatus(String(e).includes("429")
+      ? "Weather service hit its daily request limit — it'll recover shortly."
+      : "Couldn't load weather data. Tap ↻ to retry.");
   }
 }
 
@@ -476,6 +480,8 @@ function hideStatus() { $("status").classList.add("hidden"); }
 
 /* ---------- refresh ---------- */
 
+let lastWeatherLoad = 0;
+
 function refreshAll() {
   if (!state.loc) return;
   loadWeather();
@@ -483,6 +489,13 @@ function refreshAll() {
   loadAlerts();
   buildRadarLayers();   // re-request tiles so the radar advances
   if (state.playing) startLoop();
+}
+
+// Used by the "app became visible" / "back online" triggers: only refetch when
+// the data is actually stale, so glancing at the app repeatedly doesn't spam
+// the APIs (and burn Open-Meteo's daily quota).
+function refreshIfStale() {
+  if (Date.now() - lastWeatherLoad > 5 * 60 * 1000) refreshAll();
 }
 
 /* ---------- tabs ---------- */
@@ -519,10 +532,11 @@ $("frameSlider").oninput = (e) => { state.playing = false; stopLoop(); $("playBt
 setInterval(refreshAll, 10 * 60 * 1000);
 
 // Self-heal: reload data when the connection returns, and when the app is
-// brought back to the foreground (the common "I just opened it" case).
-window.addEventListener("online", refreshAll);
+// brought back to the foreground — but only if the data is actually stale, so
+// repeatedly opening the app doesn't hammer the APIs.
+window.addEventListener("online", refreshIfStale);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refreshAll();
+  if (document.visibilityState === "visible") refreshIfStale();
 });
 
 if ("serviceWorker" in navigator) {
