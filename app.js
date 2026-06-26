@@ -54,7 +54,6 @@ function setLocation(loc, { save = true } = {}) {
     $("current").classList.remove("hidden");
   }
   loadWeather();
-  loadReport();
   loadAlerts();
   initRadar();
 }
@@ -117,18 +116,73 @@ async function searchCity(q) {
 
 /* ---------- current conditions ---------- */
 
+// Fill the conditions card from a normalized object, whatever the source.
+function renderCurrent(o) {
+  $("wxIcon").textContent = o.icon;
+  $("temp").textContent = o.temp;
+  $("wxDesc").textContent = o.desc;
+  $("humidity").textContent = o.humidity;
+  $("wind").textContent = o.wind;
+  $("hilo").textContent = o.hilo;
+  $("current").classList.remove("hidden");
+}
+
+// US locations use the National Weather Service (observed conditions + local
+// forecaster output — far more accurate than a global model). Everywhere else
+// falls back to Open-Meteo.
+const nwsMeta = {}; // "lat,lon" -> { forecast, forecastHourly, obs }
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function getNwsMeta(lat, lon) {
+  const key = `${lat},${lon}`;
+  if (nwsMeta[key]) return nwsMeta[key];
+  const pts = (await fetchJson(`https://api.weather.gov/points/${lat},${lon}`)).properties;
+  let obs = null;
+  try {
+    const stations = await fetchJson(pts.observationStations);
+    const id = stations.features[0]?.properties?.stationIdentifier;
+    if (id) obs = `https://api.weather.gov/stations/${id}/observations/latest`;
+  } catch { /* no nearby station — current temp falls back to the forecast */ }
+  nwsMeta[key] = { forecast: pts.forecast, forecastHourly: pts.forecastHourly, obs };
+  return nwsMeta[key];
+}
+
 async function loadWeather() {
+  const { lat, lon } = state.loc;
+  try {
+    const meta = await getNwsMeta(lat, lon); // throws (404) outside the US
+    const [obs, fc, hourly] = await Promise.all([
+      meta.obs ? fetchJson(meta.obs).catch(() => null) : Promise.resolve(null),
+      fetchJson(meta.forecast),
+      fetchJson(meta.forecastHourly),
+    ]);
+    renderCurrentNWS(obs, fc);
+    renderDaily(nwsDailyData(fc));
+    renderHourly(nwsHourlyData(hourly));
+    renderPeriods(fc);
+    lastWeatherLoad = Date.now();
+    hideStatus();
+  } catch (e) {
+    await loadWeatherOpenMeteo();
+  }
+}
+
+async function loadWeatherOpenMeteo() {
   const { lat, lon } = state.loc;
   const url = "https://api.open-meteo.com/v1/forecast" +
     `?latitude=${lat}&longitude=${lon}` +
-    "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,weather_code,is_day" +
+    "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,weather_code,is_day" +
     "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
-    "&hourly=temperature_2m,precipitation_probability,weather_code,is_day&forecast_days=7" +
-    "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto";
+    "&hourly=temperature_2m,precipitation_probability,is_day&forecast_days=7" +
+    "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto";
   try {
-    // Phones often fail the first request on a cold radio; retry briefly on
-    // network errors / 5xx so a transient blip self-heals. But never retry a
-    // 4xx (e.g. 429 rate limit) — retrying only burns more of the daily quota.
+    // Retry on network errors / 5xx, but never a 4xx (e.g. 429) — that just
+    // burns more of the daily quota.
     let r = null, lastErr;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -143,15 +197,19 @@ async function loadWeather() {
     const j = await r.json();
     const c = j.current, d = j.daily;
     const [desc, dayIcon, nightIcon] = WMO[c.weather_code] || ["—", "❔"];
-    $("wxIcon").textContent = (!c.is_day && nightIcon) ? nightIcon : dayIcon;
-    $("temp").textContent = `${Math.round(c.temperature_2m)}°`;
-    $("wxDesc").textContent = desc;
-    $("humidity").textContent = `${c.relative_humidity_2m}%`;
-    $("wind").textContent = `${Math.round(c.wind_speed_10m)} mph ${COMPASS[Math.round(c.wind_direction_10m / 22.5) % 16]}`;
-    $("hilo").textContent = `${Math.round(d.temperature_2m_max[0])}° / ${Math.round(d.temperature_2m_min[0])}°`;
-    $("current").classList.remove("hidden");
-    renderHourly(j);
-    renderDaily(j);
+    renderCurrent({
+      icon: (!c.is_day && nightIcon) ? nightIcon : dayIcon,
+      temp: `${Math.round(c.temperature_2m)}°`,
+      desc,
+      humidity: `${c.relative_humidity_2m}%`,
+      wind: `${Math.round(c.wind_speed_10m)} mph ${COMPASS[Math.round(c.wind_direction_10m / 22.5) % 16]}`,
+      hilo: `${Math.round(d.temperature_2m_max[0])}° / ${Math.round(d.temperature_2m_min[0])}°`,
+    });
+    renderDaily(omDailyData(j));
+    renderHourly(omHourlyData(j));
+    // The detailed NWS periods don't exist outside the US.
+    $("forecastCard").classList.add("hidden");
+    $("forecastEmpty").classList.remove("hidden");
     lastWeatherLoad = Date.now();
     hideStatus();
   } catch (e) {
@@ -159,6 +217,32 @@ async function loadWeather() {
       ? "Weather service hit its daily request limit — it'll recover shortly."
       : "Couldn't load weather data. Tap ↻ to retry.");
   }
+}
+
+function omDailyData(j) {
+  const d = j.daily, today = j.current.time.slice(0, 10);
+  return d.time.map((date, i) => {
+    const [desc, icon] = WMO[d.weather_code[i]] || ["—", "❔"];
+    return {
+      label: date === today ? "Today" : weekdayShort(date),
+      icon, desc,
+      pop: d.precipitation_probability_max[i] ?? 0,
+      hi: Math.round(d.temperature_2m_max[i]),
+      lo: Math.round(d.temperature_2m_min[i]),
+    };
+  });
+}
+
+function omHourlyData(j) {
+  const h = j.hourly;
+  const nowKey = j.current.time.slice(0, 13) + ":00";
+  let start = h.time.findIndex((t) => t >= nowKey);
+  if (start < 0) start = 0;
+  const rows = [];
+  for (let i = start; i < Math.min(start + 24, h.time.length); i++) {
+    rows.push({ time: h.time[i], temp: Math.round(h.temperature_2m[i]), pop: h.precipitation_probability[i] ?? 0 });
+  }
+  return rows;
 }
 
 /* ---------- hourly (next 24h, vertical chart from the Open-Meteo response) ---------- */
@@ -181,16 +265,10 @@ function hourLabel(iso) {
   return h + ap;
 }
 
-function renderHourly(j) {
-  const h = j.hourly;
-  const nowKey = j.current.time.slice(0, 13) + ":00";
-  let start = h.time.findIndex((t) => t >= nowKey);
-  if (start < 0) start = 0;
-  const rows = [];
-  for (let i = start; i < Math.min(start + 24, h.time.length); i++) {
-    rows.push({ time: h.time[i], temp: Math.round(h.temperature_2m[i]), pop: h.precipitation_probability[i] ?? 0 });
-  }
-  if (!rows.length) return;
+// rows: [{ time (location-local ISO), temp, pop }], starting at the current
+// hour, up to 24 entries.
+function renderHourly(rows) {
+  if (!rows || !rows.length) return;
 
   const W = 340, top = 34, rowH = 30, divH = 28;
   const temps = rows.map((r) => r.temp);
@@ -237,38 +315,33 @@ function renderHourly(j) {
   $("hourlyList").innerHTML = s;
 }
 
-/* ---------- 7-day summary (one row per day, from the Open-Meteo response) ---------- */
+/* ---------- 7-day summary (one row per day; days come pre-normalized) ---------- */
 
-function dayLabel(isoDate, i) {
-  if (i === 0) return "Today";
-  // Parse as local date (no timezone shift) and name the weekday.
+function weekdayShort(isoDate) {
+  // Parse as a local date (no timezone shift) and name the weekday.
   const [y, m, d] = isoDate.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString([], { weekday: "short" });
 }
 
-function renderDaily(j) {
-  const d = j.daily;
+// days: [{ label, icon, desc, pop, hi, lo }]
+function renderDaily(days) {
   const list = $("dailyList");
   list.innerHTML = "";
-  for (let i = 0; i < d.time.length; i++) {
-    const [desc, dayIcon] = WMO[d.weather_code[i]] || ["—", "❔"];
-    const pop = d.precipitation_probability_max[i] ?? 0;
+  for (const d of days) {
     const row = document.createElement("div");
     row.className = "day-row";
     row.innerHTML =
-      `<span class="d-name">${dayLabel(d.time[i], i)}</span>` +
-      `<span class="d-icon">${dayIcon}</span>` +
-      `<span class="d-desc">${desc}</span>` +
-      `<span class="d-pop">${pop > 0 ? "💧 " + pop + "%" : ""}</span>` +
-      `<span class="d-temp"><b>${Math.round(d.temperature_2m_max[i])}°</b> ${Math.round(d.temperature_2m_min[i])}°</span>`;
+      `<span class="d-name">${d.label}</span>` +
+      `<span class="d-icon">${d.icon}</span>` +
+      `<span class="d-desc">${d.desc}</span>` +
+      `<span class="d-pop">${d.pop > 0 ? "💧 " + d.pop + "%" : ""}</span>` +
+      `<span class="d-temp"><b>${d.hi}°</b> ${d.lo}°</span>`;
     list.appendChild(row);
   }
   $("dailyCard").classList.remove("hidden");
 }
 
-/* ---------- NWS report & alerts (US only; sections hide elsewhere) ---------- */
-
-const nwsForecastUrls = {}; // "lat,lon" -> gridpoint forecast URL
+/* ---------- NWS data shaping (US only; sections hide elsewhere) ---------- */
 
 // NWS periods carry only a text shortForecast, so map keywords to an emoji.
 function nwsEmoji(text, isDay) {
@@ -283,40 +356,114 @@ function nwsEmoji(text, isDay) {
   return isDay ? "☀️" : "🌙";
 }
 
-async function loadReport() {
-  const { lat, lon } = state.loc;
-  const key = `${lat},${lon}`;
-  try {
-    if (!nwsForecastUrls[key]) {
-      const r = await fetch(`https://api.weather.gov/points/${lat},${lon}`);
-      if (!r.ok) throw new Error(r.status);
-      nwsForecastUrls[key] = (await r.json()).properties.forecast;
-    }
-    const r = await fetch(nwsForecastUrls[key]);
-    if (!r.ok) throw new Error(r.status);
-    const periods = (await r.json()).properties.periods.slice(0, 3);
-    const list = $("forecastList");
-    list.innerHTML = "";
-    for (const p of periods) {
-      const pop = p.probabilityOfPrecipitation?.value || 0;
-      const card = document.createElement("div");
-      card.className = "period-card" + (p.isDaytime ? " day" : " night");
-      card.innerHTML =
-        `<div class="pc-head">` +
-          `<span class="pc-name">${p.name}</span>` +
-          `<span class="pc-temp">${p.temperature}°</span>` +
-        `</div>` +
-        `<div class="pc-short">${nwsEmoji(p.shortForecast, p.isDaytime)} ${p.shortForecast}</div>` +
-        `<div class="pc-meta">${pop > 0 ? `<span>💧 ${pop}%</span>` : ""}<span>🍃 ${p.windDirection} ${p.windSpeed}</span></div>` +
-        `<div class="pc-text">${p.detailedForecast}</div>`;
-      list.appendChild(card);
-    }
-    $("forecastCard").classList.toggle("hidden", periods.length === 0);
-    $("forecastEmpty").classList.toggle("hidden", periods.length > 0);
-  } catch {
-    $("forecastCard").classList.add("hidden");
-    $("forecastEmpty").classList.remove("hidden");
+// Trim NWS shortForecast wording so it fits a daily row.
+function shortenSky(s) {
+  return (s || "")
+    .replace("Showers And Thunderstorms", "T-storms")
+    .replace("Thunderstorms", "T-storms")
+    .replace("Slight Chance ", "")
+    .replace("Chance ", "")
+    .replace("Areas Of ", "")
+    .replace("Patchy ", "");
+}
+
+function todayHiLo(periods) {
+  let hi = null, lo = null;
+  for (const p of periods.slice(0, 3)) {
+    if (p.isDaytime && hi === null) hi = p.temperature;
+    if (!p.isDaytime && lo === null) lo = p.temperature;
   }
+  if (hi === null) hi = periods[0].temperature;
+  if (lo === null) lo = periods[0].temperature;
+  return { hi, lo };
+}
+
+// Current conditions from the nearest station's observation (real, observed),
+// falling back to the first forecast period for any missing field.
+function renderCurrentNWS(obs, fc) {
+  const periods = fc.properties.periods;
+  const cur = periods[0];
+  const { hi, lo } = todayHiLo(periods);
+  let tempF = null, humidity = null, windMph = null, windDir = null, desc = null;
+  const op = obs && obs.properties;
+  if (op) {
+    if (op.temperature?.value != null) tempF = op.temperature.value * 9 / 5 + 32;
+    if (op.relativeHumidity?.value != null) humidity = op.relativeHumidity.value;
+    if (op.windSpeed?.value != null) windMph = op.windSpeed.value * 0.621371; // km/h → mph
+    if (op.windDirection?.value != null) windDir = op.windDirection.value;
+    if (op.textDescription) desc = op.textDescription;
+  }
+  if (tempF === null) tempF = cur.temperature;
+  if (!desc) desc = cur.shortForecast;
+  const wind = windMph != null
+    ? `${Math.round(windMph)} mph${windDir != null ? " " + COMPASS[Math.round(windDir / 22.5) % 16] : ""}`
+    : `${cur.windDirection} ${cur.windSpeed}`;
+  renderCurrent({
+    icon: nwsEmoji(desc, cur.isDaytime),
+    temp: `${Math.round(tempF)}°`,
+    desc,
+    humidity: humidity != null ? `${Math.round(humidity)}%` : "—",
+    wind,
+    hilo: `${hi}° / ${lo}°`,
+  });
+}
+
+// One row per calendar day: daytime period gives the high + condition, the
+// matching night period gives the low.
+function nwsDailyData(fc) {
+  const today = fc.properties.periods[0].startTime.slice(0, 10);
+  const order = [], byDate = {};
+  for (const p of fc.properties.periods) {
+    const date = p.startTime.slice(0, 10);
+    if (!byDate[date]) { byDate[date] = { date, hi: null, lo: null, day: null }; order.push(date); }
+    const g = byDate[date];
+    if (p.isDaytime) { g.hi = p.temperature; g.day = p; }
+    else { g.lo = p.temperature; if (!g.day) g.day = p; }
+  }
+  let groups = order.map((date) => byDate[date]);
+  // Late in the day there's no daytime period left for "today" — drop it so the
+  // strip starts on a full day rather than showing a lone evening low.
+  if (groups.length && groups[0].hi === null) groups = groups.slice(1);
+  return groups.slice(0, 7).map((g) => {
+    const sf = g.day ? g.day.shortForecast : "";
+    const pop = g.day?.probabilityOfPrecipitation?.value || 0;
+    return {
+      label: g.date === today ? "Today" : weekdayShort(g.date),
+      icon: nwsEmoji(sf, true),
+      desc: shortenSky(sf),
+      pop,
+      hi: g.hi != null ? g.hi : g.lo,
+      lo: g.lo != null ? g.lo : g.hi,
+    };
+  });
+}
+
+function nwsHourlyData(hourly) {
+  return hourly.properties.periods.slice(0, 24).map((p) => ({
+    time: p.startTime,
+    temp: Math.round(p.temperature),
+    pop: p.probabilityOfPrecipitation?.value || 0,
+  }));
+}
+
+// The detailed text cards for the current + next 2 periods.
+function renderPeriods(fc) {
+  const periods = fc.properties.periods.slice(0, 3);
+  const list = $("forecastList");
+  list.innerHTML = "";
+  for (const p of periods) {
+    const pop = p.probabilityOfPrecipitation?.value || 0;
+    const card = document.createElement("div");
+    card.className = "period-card" + (p.isDaytime ? " day" : " night");
+    card.innerHTML =
+      `<div class="pc-head"><span class="pc-name">${p.name}</span><span class="pc-temp">${p.temperature}°</span></div>` +
+      `<div class="pc-short">${nwsEmoji(p.shortForecast, p.isDaytime)} ${p.shortForecast}</div>` +
+      `<div class="pc-meta">${pop > 0 ? `<span>💧 ${pop}%</span>` : ""}<span>🍃 ${p.windDirection} ${p.windSpeed}</span></div>` +
+      `<div class="pc-text">${p.detailedForecast}</div>`;
+    list.appendChild(card);
+  }
+  $("forecastCard").classList.remove("hidden");
+  $("forecastEmpty").classList.add("hidden");
 }
 
 const SEVERITY = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
@@ -484,8 +631,7 @@ let lastWeatherLoad = 0;
 
 function refreshAll() {
   if (!state.loc) return;
-  loadWeather();
-  loadReport();
+  loadWeather();        // current + 7-day + hourly + the detailed periods
   loadAlerts();
   buildRadarLayers();   // re-request tiles so the radar advances
   if (state.playing) startLoop();
