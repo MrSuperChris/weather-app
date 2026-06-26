@@ -70,12 +70,22 @@
         · Forecast &amp; alerts: <a href="https://www.weather.gov/" target="_blank" rel="noopener">National Weather Service</a>
       </p>
     </div>
+
+    <div id="viewTrips" class="view hidden">
+      <div class="trip-add">
+        <input id="tripInput" type="search" placeholder="Add a US city…" autocomplete="off">
+        <button id="tripSearchBtn">Add</button>
+        <ul id="tripResults"></ul>
+      </div>
+      <div id="tripsList"></div>
+    </div>
   </main>
 
   <nav class="tabbar">
     <button id="tabNow" class="tab active">Now</button>
     <button id="tabToday" class="tab">Hourly</button>
     <button id="tabForecast" class="tab">7-Day</button>
+    <button id="tabTrips" class="tab">Trips</button>
     <button id="searchToggle" class="tab tab-icon" title="Change location" aria-label="Change location">&#9906;</button>
     <button id="refreshBtn" class="tab tab-icon" title="Refresh" aria-label="Refresh">&#8635;</button>
   </nav>

@@ -1,4 +1,4 @@
-const CACHE = "wx-shell-v4";
+const CACHE = "wx-shell-v5";
 const SHELL = [
   "./",
   "index.html",

@@ -84,34 +84,46 @@ async function geocode(q) {
   return (await r.json()).results || [];
 }
 
-async function searchCity(q) {
-  const list = $("searchResults");
+// The geocoder only matches place names, so "Columbus Ohio" / "Columbus, OH"
+// find nothing — retry with trailing words stripped.
+async function geocodeSmart(q) {
+  const candidates = [...new Set([
+    q,
+    q.split(",")[0].trim(),
+    q.split(",")[0].trim().split(/\s+/).slice(0, -1).join(" "),
+  ].filter(Boolean))];
+  for (const c of candidates) {
+    const results = await geocode(c);
+    if (results.length) return results;
+  }
+  return [];
+}
+
+function cityLabel(c) {
+  return c.admin1 ? `${c.name}, ${c.admin1}` : c.name;
+}
+
+// Render geocoder results into `list`; `onPick(loc)` fires when one is chosen.
+async function runSearch(q, list, onPick) {
   list.innerHTML = "<li>Searching…</li>";
   try {
-    // The geocoder only matches place names, so "Columbus Ohio" or
-    // "Columbus, OH" finds nothing — retry with trailing words stripped.
-    const candidates = [...new Set([
-      q,
-      q.split(",")[0].trim(),
-      q.split(",")[0].trim().split(/\s+/).slice(0, -1).join(" "),
-    ].filter(Boolean))];
-    let results = [];
-    for (const c of candidates) {
-      results = await geocode(c);
-      if (results.length) break;
-    }
+    const results = await geocodeSmart(q);
     list.innerHTML = "";
     if (!results.length) { list.innerHTML = "<li>No matches.</li>"; return; }
     for (const c of results) {
       const li = document.createElement("li");
       const region = [c.admin1, c.country_code].filter(Boolean).join(", ");
       li.textContent = `${c.name}${region ? " — " + region : ""}`;
-      li.onclick = () => setLocation({ name: c.admin1 ? `${c.name}, ${c.admin1}` : c.name, lat: c.latitude, lon: c.longitude });
+      li.onclick = () => onPick({ name: cityLabel(c), lat: c.latitude, lon: c.longitude });
       list.appendChild(li);
     }
   } catch {
     list.innerHTML = "<li>Search failed — check your connection.</li>";
   }
+}
+
+function searchCity(q) {
+  return runSearch(q, $("searchResults"), (loc) => setLocation(loc));
 }
 
 /* ---------- current conditions ---------- */
@@ -466,6 +478,126 @@ function renderPeriods(fc) {
   $("forecastEmpty").classList.add("hidden");
 }
 
+/* ---------- saved trips (peek at a destination's week; home untouched) ---------- */
+
+function savedTrips() {
+  try { return JSON.parse(localStorage.getItem("wx-trips")) || []; } catch { return []; }
+}
+function setTrips(t) { localStorage.setItem("wx-trips", JSON.stringify(t)); }
+
+const tripCache = {}; // "lat,lon" -> digest+days
+
+// Turn a week of daily data into a packing read-out, all derived from the data.
+function packDigest(days) {
+  const his = days.map((d) => d.hi), los = days.map((d) => d.lo);
+  const hiMax = Math.max(...his), loMin = Math.min(...los);
+  const maxPop = Math.max(...days.map((d) => d.pop));
+  const wetDays = days.filter((d) => d.pop >= 40).length;
+  const outlook = maxPop < 20 ? "Dry" : wetDays >= 3 ? "Wet stretch" : "A few showers";
+
+  const bring = [];
+  if (hiMax >= 88) bring.push(hiMax >= 95 ? "light clothes and sun protection" : "light, breathable clothes");
+  if (loMin <= 38) bring.push("a warm coat");
+  else if (loMin <= 55) bring.push(`a jacket for ${loMin <= 46 ? "cold" : "cool"} evenings`);
+  if (hiMax - loMin >= 28) bring.push("layers — big day-to-night swing");
+  if (maxPop >= 50) bring.push("a rain jacket or umbrella");
+  else if (maxPop >= 30) bring.push("maybe an umbrella");
+  else if (maxPop < 15) bring.push("no rain gear needed");
+  if (!bring.length) bring.push("your usual — mild all week");
+
+  let str = bring.join(", ");
+  return {
+    days,
+    hiRange: `${Math.min(...his)}–${hiMax}°`,
+    loRange: `${loMin}–${Math.max(...los)}°`,
+    outlook,
+    bring: str.charAt(0).toUpperCase() + str.slice(1) + ".",
+  };
+}
+
+async function loadTripForecast(lat, lon) {
+  const key = `${lat},${lon}`;
+  if (tripCache[key]) return tripCache[key];
+  const meta = await getNwsMeta(lat, lon);   // throws (404) outside the US
+  const fc = await fetchJson(meta.forecast);
+  tripCache[key] = packDigest(nwsDailyData(fc));
+  return tripCache[key];
+}
+
+function tripDetailHtml(d) {
+  const strip = d.days.map((day) =>
+    `<div class="day-row"><span class="d-name">${day.label}</span><span class="d-icon">${day.icon}</span>` +
+    `<span class="d-desc">${day.desc}</span><span class="d-pop">${day.pop > 0 ? "💧 " + day.pop + "%" : ""}</span>` +
+    `<span class="d-temp"><b>${day.hi}°</b> ${day.lo}°</span></div>`).join("");
+  return (
+    `<div class="trip-digest">` +
+      `<div class="td-row">` +
+        `<div><span class="td-lbl">Highs</span><span class="td-val">${d.hiRange}</span></div>` +
+        `<div><span class="td-lbl">Lows</span><span class="td-val">${d.loRange}</span></div>` +
+        `<div><span class="td-lbl">Outlook</span><span class="td-val">${d.outlook}</span></div>` +
+      `</div>` +
+      `<div class="td-bring"><span class="td-lbl">Bring:</span> ${d.bring}</div>` +
+    `</div>` +
+    `<div class="trip-strip">${strip}</div>`
+  );
+}
+
+function removeTrip(lat, lon) {
+  setTrips(savedTrips().filter((t) => !(t.lat === lat && t.lon === lon)));
+  renderTripsTab();
+}
+
+function addTrip(loc) {
+  const trips = savedTrips();
+  if (!trips.some((t) => t.lat === loc.lat && t.lon === loc.lon)) { trips.push(loc); setTrips(trips); }
+  $("tripInput").value = "";
+  $("tripResults").innerHTML = "";
+  renderTripsTab();
+}
+
+function renderTripsTab() {
+  const trips = savedTrips();
+  const wrap = $("tripsList");
+  wrap.innerHTML = "";
+  if (!trips.length) {
+    wrap.innerHTML = `<p class="trips-empty">No saved trips yet. Add a US city you travel to and check its week ahead — your home stays put.</p>`;
+    return;
+  }
+  for (const t of trips) {
+    const card = document.createElement("div");
+    card.className = "trip-card";
+    card.innerHTML =
+      `<button class="trip-bar"><span class="trip-name"></span><span class="trip-sum">…</span><span class="trip-chev">▾</span></button>` +
+      `<div class="trip-detail hidden"></div>` +
+      `<button class="trip-remove" aria-label="Remove trip">Remove</button>`;
+    card.querySelector(".trip-name").textContent = t.name;
+    const bar = card.querySelector(".trip-bar");
+    const sum = card.querySelector(".trip-sum");
+    const detail = card.querySelector(".trip-detail");
+    card.querySelector(".trip-remove").onclick = () => removeTrip(t.lat, t.lon);
+
+    // Preload the one-line summary so the collapsed row is informative.
+    loadTripForecast(t.lat, t.lon)
+      .then((d) => { sum.textContent = `${d.hiRange} · ${d.outlook}`; })
+      .catch(() => { sum.textContent = "US only"; });
+
+    bar.onclick = async () => {
+      const open = card.classList.toggle("open");
+      detail.classList.toggle("hidden", !open);
+      if (open && !detail.dataset.loaded) {
+        detail.innerHTML = `<p class="trip-loading">Loading forecast…</p>`;
+        try {
+          detail.innerHTML = tripDetailHtml(await loadTripForecast(t.lat, t.lon));
+          detail.dataset.loaded = "1";
+        } catch {
+          detail.innerHTML = `<p class="trip-loading">Forecast is only available for US locations.</p>`;
+        }
+      }
+    };
+    wrap.appendChild(card);
+  }
+}
+
 const SEVERITY = { Extreme: 4, Severe: 3, Moderate: 2, Minor: 1, Unknown: 0 };
 
 // Collapse a list of alerts into one headline. Distinct events join with " / "
@@ -650,6 +782,7 @@ const VIEWS = {
   now: ["viewNow", "tabNow"],
   today: ["viewToday", "tabToday"],
   week: ["viewForecast", "tabForecast"],
+  trips: ["viewTrips", "tabTrips"],
 };
 
 function showView(which) {
@@ -659,11 +792,13 @@ function showView(which) {
   }
   // The map can't measure itself while its view is hidden.
   if (which === "now" && state.map) state.map.invalidateSize();
+  if (which === "trips") renderTripsTab();
 }
 
 $("tabNow").onclick = () => showView("now");
 $("tabToday").onclick = () => showView("today");
 $("tabForecast").onclick = () => showView("week");
+$("tabTrips").onclick = () => showView("trips");
 
 /* ---------- wiring ---------- */
 
@@ -671,6 +806,8 @@ $("searchToggle").onclick = () => $("searchBox").classList.toggle("hidden");
 $("searchBtn").onclick = () => { const q = $("searchInput").value.trim(); if (q) searchCity(q); };
 $("searchInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("searchBtn").click(); });
 $("geoBtn").onclick = useGeolocation;
+$("tripSearchBtn").onclick = () => { const q = $("tripInput").value.trim(); if (q) runSearch(q, $("tripResults"), addTrip); };
+$("tripInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("tripSearchBtn").click(); });
 $("refreshBtn").onclick = refreshAll;
 $("playBtn").onclick = togglePlay;
 $("frameSlider").oninput = (e) => { state.playing = false; stopLoop(); $("playBtn").innerHTML = "&#9654;"; showFrame(+e.target.value); };
