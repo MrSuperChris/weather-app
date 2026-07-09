@@ -37,13 +37,20 @@ const state = {
 
 /* ---------- location ---------- */
 
-function savedLoc() {
-  try { return JSON.parse(localStorage.getItem("wx-location")); } catch { return null; }
+// The home screen follows GPS by default. Searching a city "pins" it (wx-pin),
+// which overrides GPS until you tap "My location" again. wx-geo just caches the
+// last GPS fix so there's something to show instantly while re-locating.
+function getPin() {
+  try { return JSON.parse(localStorage.getItem("wx-pin")); } catch { return null; }
+}
+function getGeoCache() {
+  try { return JSON.parse(localStorage.getItem("wx-geo")); } catch { return null; }
 }
 
-function setLocation(loc, { save = true } = {}) {
+function setLocation(loc, { pin = false, cacheGeo = false } = {}) {
   state.loc = loc;
-  if (save) localStorage.setItem("wx-location", JSON.stringify(loc));
+  if (pin) localStorage.setItem("wx-pin", JSON.stringify(loc));
+  if (cacheGeo) localStorage.setItem("wx-geo", JSON.stringify(loc));
   document.title = loc.name ? `${loc.name} — Weather` : "Weather";
   $("searchBox").classList.add("hidden");
   // Render the conditions card immediately with placeholders so the layout
@@ -58,9 +65,15 @@ function setLocation(loc, { save = true } = {}) {
   initRadar();
 }
 
-function useGeolocation() {
-  if (!navigator.geolocation) { showStatus("Geolocation unavailable — search for your city instead."); return; }
-  showStatus("Locating…");
+// Read the device location. On boot this runs silently in the background (the
+// app already shows the cached/last location); the "My location" button runs it
+// with feedback and clears any pinned city so the app follows GPS again.
+function locate({ userInitiated = false } = {}) {
+  if (!navigator.geolocation) {
+    if (userInitiated) showStatus("Geolocation unavailable — search for your city instead.");
+    return;
+  }
+  if (userInitiated) showStatus("Locating…");
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       const lat = +pos.coords.latitude.toFixed(4);
@@ -71,10 +84,11 @@ function useGeolocation() {
         const j = await r.json();
         name = [j.city || j.locality, j.principalSubdivisionCode?.replace(/^US-/, "")].filter(Boolean).join(", ") || name;
       } catch { /* keep generic name */ }
+      if (userInitiated) localStorage.removeItem("wx-pin"); // "My location" un-pins
       hideStatus();
-      setLocation({ name, lat, lon });
+      setLocation({ name, lat, lon }, { cacheGeo: true });
     },
-    () => showStatus("Couldn't get your location — search for your city instead."),
+    () => { if (userInitiated) showStatus("Couldn't get your location — search for your city instead."); },
     { timeout: 8000, maximumAge: 600000 }
   );
 }
@@ -123,7 +137,7 @@ async function runSearch(q, list, onPick) {
 }
 
 function searchCity(q) {
-  return runSearch(q, $("searchResults"), (loc) => setLocation(loc));
+  return runSearch(q, $("searchResults"), (loc) => setLocation(loc, { pin: true }));
 }
 
 /* ---------- current conditions ---------- */
@@ -805,7 +819,7 @@ $("tabTrips").onclick = () => showView("trips");
 $("searchToggle").onclick = () => $("searchBox").classList.toggle("hidden");
 $("searchBtn").onclick = () => { const q = $("searchInput").value.trim(); if (q) searchCity(q); };
 $("searchInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("searchBtn").click(); });
-$("geoBtn").onclick = useGeolocation;
+$("geoBtn").onclick = () => locate({ userInitiated: true });
 $("tripSearchBtn").onclick = () => { const q = $("tripInput").value.trim(); if (q) runSearch(q, $("tripResults"), addTrip); };
 $("tripInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("tripSearchBtn").click(); });
 $("refreshBtn").onclick = refreshAll;
@@ -826,16 +840,23 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
-// Boot: ?lat=&lon=&name= override → saved location → geolocation prompt.
+// Migrate the old single "wx-location" key into the geo cache so nothing shows
+// blank on first launch after this update, then GPS takes over.
+const legacyLoc = localStorage.getItem("wx-location");
+if (legacyLoc) {
+  if (!localStorage.getItem("wx-geo")) localStorage.setItem("wx-geo", legacyLoc);
+  localStorage.removeItem("wx-location");
+}
+
+// Boot: ?lat/lon test override → a city you pinned → otherwise follow GPS,
+// showing the last-known (or default) instantly while it locates in the
+// background. The app is never blank, so the geolocation prompt can't hang it.
 const qp = new URLSearchParams(location.search);
 if (qp.has("lat") && qp.has("lon")) {
-  setLocation({ name: qp.get("name") || "Custom location", lat: +qp.get("lat"), lon: +qp.get("lon") }, { save: false });
-} else if (savedLoc()) {
-  setLocation(savedLoc());
+  setLocation({ name: qp.get("name") || "Custom location", lat: +qp.get("lat"), lon: +qp.get("lon") });
+} else if (getPin()) {
+  setLocation(getPin());
 } else {
-  // First run: load the default location rather than auto-triggering the
-  // geolocation permission prompt (browsers may block it without a user
-  // gesture, and embedded previews hang on it). Not saved, so a location
-  // the user picks later wins.
-  setLocation(DEFAULT_LOC, { save: false });
+  setLocation(getGeoCache() || DEFAULT_LOC);
+  locate();
 }
